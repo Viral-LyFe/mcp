@@ -136,7 +136,21 @@ def _get(doctype: str, *, check_permissions: bool):
     def handler(name: str) -> dict[str, Any]:
         if check_permissions:
             _require_permission(doctype, "read", doc=name)
-        return _frappe().get_doc(doctype, name).as_dict()
+        doc = _frappe().get_doc(doctype, name)
+        # frappe.get_doc() does NOT apply permlevel field-hiding on its own —
+        # that only happens automatically via frappe.client.get_doc's REST path
+        # or frappe.model.db_query (list views). Since this handler calls
+        # get_doc() directly, permlevel-restricted fields (e.g. Lyfe Order's
+        # cost_of_goods, customer_email) would otherwise leak their real value
+        # to any caller with base doctype read access, regardless of their
+        # permlevel clearance. Confirmed by direct testing — do not remove
+        # this call. Note: the masked field's KEY still appears in the
+        # returned dict (Document.as_dict() re-populates every declared
+        # field via self.get()), but its VALUE is None once delattr'd here —
+        # that's the actual masking; don't test for key absence, test the
+        # value.
+        doc.apply_fieldlevel_read_permissions()
+        return doc.as_dict()
 
     handler.__name__ = f"get_{_snake(doctype)}"
     handler.__doc__ = (
