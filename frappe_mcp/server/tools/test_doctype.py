@@ -43,7 +43,13 @@ def _fake_frappe(
     def get_doc(dt, name):
         base = dict(doc)
         base.update({"doctype": dt, "name": name})
-        return SimpleNamespace(as_dict=lambda: base)
+        return SimpleNamespace(
+            as_dict=lambda: base,
+            # Real frappe.get_doc() docs don't apply permlevel field-hiding
+            # by themselves — _get()'s handler calls this explicitly. The
+            # fake is a no-op since these tests don't exercise permlevel.
+            apply_fieldlevel_read_permissions=lambda: None,
+        )
 
     return SimpleNamespace(
         has_permission=lambda *a, **k: permission,
@@ -223,7 +229,10 @@ class TestGetOperation:
 
         fake = SimpleNamespace(
             has_permission=has_permission,
-            get_doc=lambda dt, name: SimpleNamespace(as_dict=lambda: {"name": name}),
+            get_doc=lambda dt, name: SimpleNamespace(
+                as_dict=lambda: {"name": name},
+                apply_fieldlevel_read_permissions=lambda: None,
+            ),
         )
         monkeypatch.setattr(doctype_module, "_frappe", lambda: fake)
 
