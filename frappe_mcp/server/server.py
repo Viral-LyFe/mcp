@@ -216,6 +216,37 @@ class MCP:
         """
         self._tool_registry[tool['name']] = tool
 
+    def expose_doctype(
+        self,
+        doctype: str,
+        *,
+        operations=None,
+        check_permissions: bool = True,
+    ) -> None:
+        """Register read-only MCP tools for a Frappe DocType.
+
+        Example:
+            mcp = frappe_mcp.MCP("my-server")
+            mcp.expose_doctype("ToDo")
+            # -> registers get_todo, list_todo
+
+            mcp.expose_doctype("ToDo", operations=("get",))
+
+        Only "get" and "list" are supported — this fork is read-only by
+        design (adapted from upstream frappe/mcp#6, which also included
+        create/update/delete; those were dropped here on purpose, see
+        frappe_mcp/server/tools/doctype.py's module docstring).
+        """
+        from frappe_mcp.server.tools.doctype import DEFAULT_OPERATIONS
+        from frappe_mcp.server.tools.doctype import expose_doctype as _expose
+
+        _expose(
+            self,
+            doctype,
+            operations=operations if operations is not None else DEFAULT_OPERATIONS,
+            check_permissions=check_permissions,
+        )
+
     def prompt(
         self,
         *,
