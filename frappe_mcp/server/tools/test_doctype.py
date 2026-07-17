@@ -30,6 +30,7 @@ def _fake_frappe(
     doc: dict | None = None,
     list_result=None,
     list_calls=None,
+    session_user: str = "some-user@example.com",
 ):
     """Minimal frappe stand-in for handler tests."""
     doc = doc if doc is not None else {"name": "x", "doctype": "ToDo"}
@@ -49,9 +50,15 @@ def _fake_frappe(
             # by themselves — _get()'s handler calls this explicitly. The
             # fake is a no-op since these tests don't exercise permlevel.
             apply_fieldlevel_read_permissions=lambda: None,
+            # No permlevel-restricted fields in these fakes' meta — every
+            # test doctype here has an empty field list, so
+            # _masked_permlevel_fieldnames() always computes an empty set.
+            meta=SimpleNamespace(fields=[]),
+            get_permlevel_access=lambda *a, **k: [],
         )
 
     return SimpleNamespace(
+        session=SimpleNamespace(user=session_user),
         has_permission=lambda *a, **k: permission,
         get_doc=get_doc,
         db=SimpleNamespace(get_list=get_list),
@@ -228,10 +235,13 @@ class TestGetOperation:
             return False
 
         fake = SimpleNamespace(
+            session=SimpleNamespace(user="some-user@example.com"),
             has_permission=has_permission,
             get_doc=lambda dt, name: SimpleNamespace(
                 as_dict=lambda: {"name": name},
                 apply_fieldlevel_read_permissions=lambda: None,
+                meta=SimpleNamespace(fields=[]),
+                get_permlevel_access=lambda *a, **k: [],
             ),
         )
         monkeypatch.setattr(doctype_module, "_frappe", lambda: fake)
@@ -239,6 +249,53 @@ class TestGetOperation:
         build_tool("ToDo", "get", check_permissions=False)["fn"](name="task-1")
 
         assert calls == []
+
+    def test_permlevel_restricted_field_is_replaced_with_sentinel_not_none(self, monkeypatch):
+        # Regression guard: a masked field must not come back as None/0 —
+        # that's indistinguishable from "this field is genuinely empty" to
+        # an LLM (and to whatever the LLM tells the end user). Found live:
+        # a user without cost-field access asked about an order and got
+        # told COGS was "$0.00 recorded" — which was the masked value, not
+        # the real one — instead of "you don't have permission to see this."
+        cost_field = SimpleNamespace(fieldname="cost_of_goods", permlevel=1)
+        doc = SimpleNamespace(
+            as_dict=lambda: {"name": "task-1", "cost_of_goods": None},
+            apply_fieldlevel_read_permissions=lambda: None,
+            meta=SimpleNamespace(fields=[cost_field]),
+            get_permlevel_access=lambda *a, **k: [],  # no permlevel 1 access
+        )
+        fake = SimpleNamespace(
+            session=SimpleNamespace(user="some-user@example.com"),
+            has_permission=lambda *a, **k: True,
+            get_doc=lambda dt, name: doc,
+        )
+        monkeypatch.setattr(doctype_module, "_frappe", lambda: fake)
+
+        result = build_tool("Lyfe Order", "get")["fn"](name="task-1")
+
+        assert result["cost_of_goods"] == doctype_module._HIDDEN_FIELD_SENTINEL
+
+    def test_administrator_never_gets_the_sentinel(self, monkeypatch):
+        # apply_fieldlevel_read_permissions() itself exempts Administrator —
+        # _masked_permlevel_fieldnames() must mirror that exemption, or an
+        # Administrator's own real values would get incorrectly replaced.
+        cost_field = SimpleNamespace(fieldname="cost_of_goods", permlevel=1)
+        doc = SimpleNamespace(
+            as_dict=lambda: {"name": "task-1", "cost_of_goods": 135.32},
+            apply_fieldlevel_read_permissions=lambda: None,
+            meta=SimpleNamespace(fields=[cost_field]),
+            get_permlevel_access=lambda *a, **k: [],
+        )
+        fake = SimpleNamespace(
+            session=SimpleNamespace(user="Administrator"),
+            has_permission=lambda *a, **k: True,
+            get_doc=lambda dt, name: doc,
+        )
+        monkeypatch.setattr(doctype_module, "_frappe", lambda: fake)
+
+        result = build_tool("Lyfe Order", "get")["fn"](name="task-1")
+
+        assert result["cost_of_goods"] == 135.32
 
 
 class TestListOperation:
