@@ -132,6 +132,27 @@ def build_tool(doctype: str, operation: str, *, check_permissions: bool = True):
             )
 
 
+_HIDDEN_FIELD_SENTINEL = "[hidden — insufficient permission]"
+
+
+def _masked_permlevel_fieldnames(doc) -> set[str]:
+    """Fieldnames apply_fieldlevel_read_permissions() is about to strip.
+
+    Computed before that call runs, since afterwards the attribute is gone
+    and there's no way to tell "field is legitimately empty" apart from
+    "field was masked" just by looking at the resulting dict.
+    """
+    frappe = _frappe()
+    if frappe.session.user == "Administrator":
+        return set()
+    has_access_to = doc.get_permlevel_access("read")
+    return {
+        df.fieldname
+        for df in doc.meta.fields
+        if df.permlevel and df.permlevel not in has_access_to
+    }
+
+
 def _get(doctype: str, *, check_permissions: bool):
     def handler(name: str) -> dict[str, Any]:
         if check_permissions:
@@ -144,13 +165,20 @@ def _get(doctype: str, *, check_permissions: bool):
         # cost_of_goods, customer_email) would otherwise leak their real value
         # to any caller with base doctype read access, regardless of their
         # permlevel clearance. Confirmed by direct testing — do not remove
-        # this call. Note: the masked field's KEY still appears in the
-        # returned dict (Document.as_dict() re-populates every declared
-        # field via self.get()), but its VALUE is None once delattr'd here —
-        # that's the actual masking; don't test for key absence, test the
-        # value.
+        # this call.
+        masked_fields = _masked_permlevel_fieldnames(doc)
         doc.apply_fieldlevel_read_permissions()
-        return doc.as_dict()
+        result = doc.as_dict()
+        # Document.as_dict() re-populates every declared field via self.get(),
+        # so a masked field's KEY still appears with value None — that reads
+        # as "this field is genuinely empty/zero" to an LLM (and to a human
+        # reading Claude's summary), not "you're not allowed to see this."
+        # Replace with an explicit sentinel so the distinction survives into
+        # whatever Claude says back to the user.
+        for fieldname in masked_fields:
+            if fieldname in result:
+                result[fieldname] = _HIDDEN_FIELD_SENTINEL
+        return result
 
     handler.__name__ = f"get_{_snake(doctype)}"
     handler.__doc__ = (
