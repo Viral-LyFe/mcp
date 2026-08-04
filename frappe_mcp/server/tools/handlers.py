@@ -53,11 +53,15 @@ def _get_result(fn, arguments):
 
     structured = None
     try:
-        content.text = content.text or json.dumps(tool_result)
+        content.text = content.text or json.dumps(tool_result, default=str)
+        # Round-trip through plain JSON types (rather than passing the raw
+        # ORM result, e.g. frappe._dict, straight to pydantic) — pydantic-core's
+        # schema serializer breaks on large nested custom dict subclasses
+        # (observed on Lyfe Order's ~215-field / 10-child-table structure).
         if isinstance(tool_result, dict):
-            structured = tool_result
+            structured = json.loads(content.text)
     except Exception:
-        content.text = content.text or str(tool_result)
+        content.text = content.text or json.dumps({"error": "unserializable result"})
 
     result = types.CallToolResult(
         content=[content], structuredContent=structured, isError=False
